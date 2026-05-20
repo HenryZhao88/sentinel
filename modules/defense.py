@@ -151,19 +151,22 @@ async def run(ctx: Context) -> None:
                 description=f"A {category.lower()} payload sent in parameter "
                             f"'{param}' was not just reflected but evaluated "
                             "by the server.",
-                evidence=f"param={param}; payload={payload}",
+                evidence=f"param={param}; payload={payload}; "
+                         f"result={proof_by_cat.get(category, '')!r} in response",
                 remediation="Treat all input as untrusted; never pass it to "
                             "interpreters, shells, or template engines.",
                 confidence="firm",
                 impact="An attacker can run code or read files on the server.",
                 reproduction=[
                     f"Request {_with_param(url, param, payload)}",
-                    "Observe the payload being evaluated in the response.",
+                    f"Observe {proof_by_cat.get(category, '')!r} in the response "
+                    "— the evaluated result of the payload, which the server "
+                    "would not return unless it executed the input.",
                 ],
                 verify_type="payload_exec",
                 verify_data={
                     "url": url, "param": param, "payload": payload,
-                    "proof": _PROOF.get(category, ""),
+                    "proof": proof_by_cat.get(category, ""),
                 },
             ))
             return
@@ -179,8 +182,8 @@ async def run(ctx: Context) -> None:
     jobs = [
         _probe(url, param, category, payload)
         for url, param in targets
-        for category, payloads in _PAYLOADS.items()
-        for payload in payloads
+        for category, cat_payloads in payloads.items()
+        for payload in cat_payloads
     ]
     await asyncio.gather(*jobs)
 
