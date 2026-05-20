@@ -9,6 +9,7 @@ Payloads are benign (e.g. `id`, `{{7*7}}`); only their handling is of interest.
 from __future__ import annotations
 
 import asyncio
+import random
 import re
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -35,7 +36,9 @@ _PAYLOADS: dict[str, list[str]] = {
         "....//....//etc/passwd", "..\\..\\..\\windows\\win.ini",
     ],
     "Command injection": [";id", "| id", "$(id)", "`id`", "& whoami"],
-    "Template injection": ["{{7*7}}", "${7*7}", "<%= 7*7 %>", "#{7*7}"],
+    # "Template injection" payloads are built per-scan in `run()`: each carries
+    # a unique random arithmetic identity so its evaluated result cannot be
+    # confused with numbers that occur naturally in a page (see _make_ssti_probe).
 }
 
 # Response signals.
@@ -51,18 +54,48 @@ _SQL_ERRORS = re.compile(
     r"Unclosed quotation mark|SQLite)", re.IGNORECASE,
 )
 # Markers that a payload was not just passed through but actually evaluated.
+# (The Template-injection marker is built per-scan in `run()` from the random
+# product, so it is intentionally absent here.)
 _EXECUTED = {
     "Command injection": re.compile(r"uid=\d+\(", re.IGNORECASE),
-    "Template injection": re.compile(r"(^|[^0-9])49([^0-9]|$)"),
     "Path traversal": re.compile(r"root:.*:0:0:|\[(extensions|fonts)\]",
                                  re.IGNORECASE),
 }
 # A stable literal each category's evaluation produces, for the repro script.
 _PROOF = {
     "Command injection": "uid=",
-    "Template injection": "49",
     "Path traversal": "root:",
 }
+
+
+def _make_ssti_probe() -> tuple[list[str], str, re.Pattern[str]]:
+    """Build template-injection probes around a unique arithmetic identity.
+
+    Two large random factors are multiplied *inside* the template syntax. Their
+    product is a 7–8 digit number with no natural reason to appear in a page, so
+    finding it in the response is strong evidence the server evaluated the
+    expression. This replaces the classic ``{{7*7}}`` → ``49`` probe, whose
+    result collides with prices, counts and IDs constantly and produces false
+    positives. The factors themselves never equal the product, so a server that
+    merely echoes the payload literally cannot trip the matcher.
+
+    Returns ``(payloads, proof, matcher)`` where ``proof`` is the product as a
+    string and ``matcher`` only matches it as a standalone number (not as a
+    substring of a larger number).
+    """
+    a = random.randint(1000, 9999)
+    b = random.randint(1000, 9999)
+    product = a * b
+    expr = f"{a}*{b}"
+    payloads = [
+        f"{{{{{expr}}}}}",   # Jinja2 / Twig / Handlebars / Nunjucks
+        f"${{{expr}}}",      # JSP EL / Spring / Thymeleaf / Mako
+        f"<%= {expr} %>",    # ERB
+        f"#{{{expr}}}",      # Ruby / Slim string interpolation
+    ]
+    proof = str(product)
+    matcher = re.compile(rf"(?<!\d){proof}(?!\d)")
+    return payloads, proof, matcher
 
 
 def _with_param(url: str, name: str, value: str) -> str:
@@ -79,12 +112,19 @@ async def run(ctx: Context) -> None:
         ctx.log("  [dim]no parameterised URLs to test defenses against[/dim]")
         return
 
+    # Template-injection probes carry a fresh random arithmetic identity per
+    # scan; everything else is the static battery above.
+    ssti_payloads, ssti_proof, ssti_matcher = _make_ssti_probe()
+    payloads = {**_PAYLOADS, "Template injection": ssti_payloads}
+    executed_by_cat = {**_EXECUTED, "Template injection": ssti_matcher}
+    proof_by_cat = {**_PROOF, "Template injection": ssti_proof}
+
     # tally[category] = {"blocked": n, "reflected": n, "error": n,
     #                     "passed": n, "executed": n, "total": n}
     tally: dict[str, dict[str, int]] = {
         cat: {k: 0 for k in
               ("blocked", "reflected", "error", "passed", "executed", "total")}
-        for cat in _PAYLOADS
+        for cat in payloads
     }
     sem = asyncio.Semaphore(ctx.config.concurrency)
 
@@ -100,8 +140,11 @@ async def run(ctx: Context) -> None:
             bucket["error"] += 1
             return
         body = resp.text if resp.content else ""
-        executed = _EXECUTED.get(category)
-        if executed is not None and executed.search(body):
+        executed = executed_by_cat.get(category)
+        # A payload echoed back verbatim was reflected, not evaluated — only the
+        # presence of the *result* (absent from the payload itself) proves
+        # execution.
+        if executed is not None and payload not in body and executed.search(body):
             bucket["executed"] += 1
             ctx.add_finding(Finding(
                 title=f"{category} payload executed by the server",
