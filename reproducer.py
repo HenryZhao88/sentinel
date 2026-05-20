@@ -36,6 +36,7 @@ stops. Nothing is exploited, dumped, or modified.
 Usage:  python3 reproduce.py
 """
 
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -96,6 +97,19 @@ def fetch_status_location(url):
 def has_sql_error(body):
     low = body.lower()
     return any(sig in low for sig in _SQL_ERRORS)
+
+
+def proof_found(body, proof):
+    """True if `proof` is present as genuine evidence of evaluation.
+
+    A purely numeric proof (e.g. a template-injection product like 40575657)
+    must match as a STANDALONE number -- otherwise it could coincidentally
+    appear inside a larger number on the page. Non-numeric proofs (e.g.
+    'uid=') are matched as plain substrings.
+    """
+    if proof.isdigit():
+        return re.search(r"(?<!\\d)" + re.escape(proof) + r"(?!\\d)", body) is not None
+    return proof in body
 '''
 
 _T_SQLI = '''
@@ -180,10 +194,15 @@ _T_EXEC = '''
 
 def {name}():
     print({banner!r})
+    # `proof` is the evaluated result of an arithmetic identity unique to this
+    # scan (e.g. two random factors multiplied). It is large and arbitrary, so
+    # its presence in the response is not a coincidence -- it means the server
+    # ran the expression we put in the URL. (The old 7*7 -> 49 check matched 49
+    # wherever it appeared naturally; this does not.)
     payload, proof = {payload!r}, {proof!r}
     body = fetch(with_param({url!r}, {param!r}, payload))
     sent_literally = payload in body
-    evaluated = bool(proof) and (proof in body) and not sent_literally
+    evaluated = bool(proof) and proof_found(body, proof) and not sent_literally
     if evaluated:
         print("  CONFIRMED: sent " + repr(payload) + ", the server returned " +
               repr(proof) + " -> it evaluated input you supplied in the URL.")

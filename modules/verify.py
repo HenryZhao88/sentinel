@@ -231,10 +231,81 @@ async def _verify_unauth_access(
     )
 
 
+_ARITH = re.compile(r"\d+\s*\*\s*\d+")
+
+
+def _evaluated(resp: httpx.Response | None, payload: str, product: str) -> bool:
+    """True if `product` appears as a standalone number AND the payload was not
+    merely echoed verbatim — i.e. the server returned the *result* of the
+    arithmetic, not the expression."""
+    if resp is None or not product:
+        return False
+    body = resp.text
+    if payload in body:  # reflected literally, not evaluated
+        return False
+    return re.search(rf"(?<!\d){re.escape(product)}(?!\d)", body) is not None
+
+
+async def _verify_payload_exec(
+    ctx: Context, finding: Finding
+) -> tuple[bool, str, str]:
+    """Confirm template/expression injection with two independent identities.
+
+    The detector flagged one random product. Here we re-send that payload and,
+    crucially, a *second* payload built from the same template syntax but
+    different random factors. A server that genuinely evaluates the expression
+    returns both products; a page that merely happened to contain the first
+    number cannot also contain the second. This rules out the one-in-millions
+    coincidence that a single arithmetic check leaves open.
+    """
+    url = finding.verify_data["url"]
+    param = finding.verify_data["param"]
+    payload = str(finding.verify_data.get("payload", ""))
+    proof = str(finding.verify_data.get("proof", ""))
+
+    primary_url = _with_param(url, param, payload)
+    primary = await ctx.http.get(primary_url, follow_redirects=False)
+
+    # Rebuild the same template wrapper with a fresh, unrelated identity.
+    match = _ARITH.search(payload)
+    control_url = control_payload = control_proof = ""
+    control = None
+    if match:
+        c, d = random.randint(1000, 9999), random.randint(1000, 9999)
+        control_proof = str(c * d)
+        control_payload = f"{payload[:match.start()]}{c}*{d}{payload[match.end():]}"
+        control_url = _with_param(url, param, control_payload)
+        control = await ctx.http.get(control_url, follow_redirects=False)
+
+    transcript = "\n".join(filter(None, [
+        _line(f"identity #1 (expect {proof})", primary, primary_url),
+        _line(f"identity #2 (expect {control_proof})", control, control_url)
+        if match else "",
+    ]))
+
+    primary_ok = _evaluated(primary, payload, proof)
+    control_ok = bool(match) and _evaluated(control, control_payload, control_proof)
+    if primary_ok and control_ok:
+        return (
+            True,
+            f"Confirmed: the server evaluated two independent expressions, "
+            f"returning {proof} and {control_proof} respectively — proof it "
+            "executes input supplied in the URL. No further action was taken.",
+            transcript,
+        )
+    return (
+        False,
+        "Not confirmed: the server did not return the evaluated result of both "
+        "arithmetic identities, so this is not reliable server-side execution.",
+        transcript,
+    )
+
+
 _VERIFIERS = {
     "sqli": _verify_sqli,
     "xss": _verify_xss,
     "open_redirect": _verify_open_redirect,
     "exposed_file": _verify_exposed_file,
     "unauth_access": _verify_unauth_access,
+    "payload_exec": _verify_payload_exec,
 }
