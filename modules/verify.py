@@ -8,6 +8,8 @@ nothing more. The principle: prove the door is unlocked; never walk through it.
 
 from __future__ import annotations
 
+import random
+import re
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
