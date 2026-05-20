@@ -3,7 +3,8 @@
 For each parameterised URL, Sentinel sends a battery of well-known *detection*
 payloads and classifies each response: blocked, reflected, error, or passed.
 This is observational — it measures filtering coverage, it does not exploit.
-Payloads are benign (e.g. `id`, `{{7*7}}`); only their handling is of interest.
+Payloads are benign (e.g. `id`, `{{4071*9967}}`); only their handling is of
+interest.
 """
 
 from __future__ import annotations
