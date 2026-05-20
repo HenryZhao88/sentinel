@@ -141,10 +141,7 @@ async def run(ctx: Context) -> None:
             return
         body = resp.text if resp.content else ""
         executed = executed_by_cat.get(category)
-        # A payload echoed back verbatim was reflected, not evaluated — only the
-        # presence of the *result* (absent from the payload itself) proves
-        # execution.
-        if executed is not None and payload not in body and executed.search(body):
+        if executed is not None and executed.search(body):
             bucket["executed"] += 1
             ctx.add_finding(Finding(
                 title=f"{category} payload executed by the server",
