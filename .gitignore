@@ -1,0 +1,13 @@
+.venv/
+*.egg-info/
+build/
+dist/
+
+__pycache__/
+*.py[cod]
+
+reports/
+sentinel-workspaces/
+
+# Separate local project kept alongside this checkout.
+pentest/

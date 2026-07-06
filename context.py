@@ -9,7 +9,7 @@ from rich.console import Console
 
 from sentinel.endpoint import AuthProfile, Endpoint
 from sentinel.findings import Finding
-from sentinel.http import HttpClient
+from sentinel.http_client import HttpClient
 from sentinel.scope import Scope
 
 ALL_PHASES = [
