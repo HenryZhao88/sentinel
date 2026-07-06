@@ -132,7 +132,7 @@ async def run(ctx: Context) -> None:
     async def _probe(url: str, param: str, category: str, payload: str) -> None:
         async with sem:
             # Never chase a payload-controlled redirect target.
-            resp = await ctx.http.get(
+            resp = await ctx.get(
                 _with_param(url, param, payload), follow_redirects=False
             )
         bucket = tally[category]

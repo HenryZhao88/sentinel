@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import urljoin
 
 from sentinel.context import Context
+from sentinel.endpoint import Endpoint
 from sentinel.findings import Finding
 
 _WORDLIST = Path(__file__).parent.parent / "wordlists" / "paths.txt"
@@ -58,7 +59,7 @@ async def run(ctx: Context) -> None:
     base = ctx.scope.root_url.rstrip("/") + "/"
 
     # Detect soft-404s: a random path that "shouldn't" exist.
-    baseline = await ctx.http.get(urljoin(base, "sentinel-nonexistent-a8f3e1"))
+    baseline = await ctx.get(urljoin(base, "sentinel-nonexistent-a8f3e1"))
     baseline_len = len(baseline.content) if baseline is not None else -1
     baseline_status = baseline.status_code if baseline is not None else 404
 
@@ -67,7 +68,7 @@ async def run(ctx: Context) -> None:
     async def _check(path: str) -> None:
         url = urljoin(base, path)
         async with sem:
-            resp = await ctx.http.get(url)
+            resp = await ctx.get(url)
         if resp is None:
             return
         status = resp.status_code
@@ -80,9 +81,23 @@ async def run(ctx: Context) -> None:
 
         if status in (301, 302, 307, 308):
             ctx.record_url(url)
+            ctx.record_endpoint(Endpoint(
+                method="GET",
+                url=url,
+                source="content",
+                auth_profile=ctx.default_auth_profile,
+                status_code=status,
+            ))
             return
 
         if status in (401, 403):
+            ctx.record_endpoint(Endpoint(
+                method="GET",
+                url=url,
+                source="content",
+                auth_profile=ctx.default_auth_profile,
+                status_code=status,
+            ))
             ctx.add_finding(Finding(
                 title=f"Protected path exists: /{path}",
                 severity="info",
@@ -97,6 +112,13 @@ async def run(ctx: Context) -> None:
 
         # 200-class hit.
         ctx.record_url(url)
+        ctx.record_endpoint(Endpoint(
+            method="GET",
+            url=url,
+            source="content",
+            auth_profile=ctx.default_auth_profile,
+            status_code=status,
+        ))
         if path in _SENSITIVE:
             severity, note = _SENSITIVE[path]
             ctx.add_finding(Finding(

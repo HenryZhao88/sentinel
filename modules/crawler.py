@@ -9,6 +9,7 @@ from html.parser import HTMLParser
 from urllib.parse import parse_qs, urldefrag, urljoin, urlparse
 
 from sentinel.context import Context
+from sentinel.endpoint import Endpoint
 from sentinel.findings import Finding
 
 # File extensions not worth fetching during a crawl.
@@ -37,14 +38,25 @@ class _LinkExtractor(HTMLParser):
         elif tag == "form":
             self._current_form = {
                 "action": a.get("action", ""),
-                "method": (a.get("method") or "get").lower(),
-                "params": [],
+                "method": (a.get("method") or "get").upper(),
+                "enctype": (
+                    a.get("enctype") or "application/x-www-form-urlencoded"
+                ).lower(),
+                "params": {},
+                "inputs": [],
             }
             self.forms.append(self._current_form)
         elif tag in ("input", "textarea", "select") and self._current_form:
             name = a.get("name")
             if name:
-                self._current_form["params"].append(name)
+                value = a.get("value", "")
+                input_type = (a.get("type") or tag).lower()
+                self._current_form["params"][name] = value
+                self._current_form["inputs"].append({
+                    "name": name,
+                    "type": input_type,
+                    "value": value,
+                })
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "form":
@@ -60,7 +72,7 @@ async def run(ctx: Context) -> None:
 
     while queue and pages_fetched < ctx.config.max_pages:
         url, depth = queue.popleft()
-        resp = await ctx.http.get(url, follow_redirects=False)
+        resp = await ctx.get(url, follow_redirects=False)
         if resp is None:
             continue
         pages_fetched += 1
@@ -77,6 +89,15 @@ async def run(ctx: Context) -> None:
 
         params = set(parse_qs(urlparse(url).query).keys())
         ctx.record_url(url, params)
+        ctx.record_endpoint(Endpoint(
+            method="GET",
+            url=url,
+            query_params=params,
+            source="crawl",
+            auth_profile=ctx.default_auth_profile,
+            evidence_url=url,
+            status_code=resp.status_code,
+        ))
 
         ctype = resp.headers.get("content-type", "")
         if "html" not in ctype or depth >= ctx.config.max_depth:
@@ -96,6 +117,14 @@ async def run(ctx: Context) -> None:
                 continue
             link_params = set(parse_qs(urlparse(link).query).keys())
             ctx.record_url(link, link_params)
+            ctx.record_endpoint(Endpoint(
+                method="GET",
+                url=link,
+                query_params=link_params,
+                source="crawl",
+                auth_profile=ctx.default_auth_profile,
+                evidence_url=url,
+            ))
             if link not in seen and len(seen) < ctx.config.max_pages * 2:
                 seen.add(link)
                 queue.append((link, depth + 1))
@@ -103,20 +132,38 @@ async def run(ctx: Context) -> None:
         for form in parser.forms:
             action = urljoin(url, form["action"]) if form["action"] else url
             if ctx.scope.in_scope(action):
-                ctx.record_url(action, set(form["params"]))
+                params = dict(form["params"])
+                method = form["method"].upper()
+                risk_hints = set()
+                if any(i["type"] == "file" for i in form["inputs"]):
+                    risk_hints.add("file_upload")
+                ctx.record_url(action, set(params))
+                ctx.record_endpoint(Endpoint(
+                    method=method,
+                    url=action,
+                    query_params=params if method == "GET" else {},
+                    body_params=params if method != "GET" else {},
+                    content_type=form["enctype"],
+                    source="crawl",
+                    auth_profile=ctx.default_auth_profile,
+                    evidence_url=url,
+                    risk_hints=risk_hints,
+                ))
 
     ctx.recon["crawl"] = {
         "pages_fetched": pages_fetched,
         "urls_discovered": len(ctx.urls),
+        "endpoints_discovered": len(ctx.endpoints),
         "parameterised_urls": sum(1 for p in ctx.urls.values() if p),
     }
     ctx.add_finding(Finding(
-        title=f"Crawl complete: {len(ctx.urls)} URL(s) mapped",
+        title=f"Crawl complete: {len(ctx.urls)} URL(s), "
+              f"{len(ctx.endpoints)} endpoint(s) mapped",
         severity="info",
         target=ctx.scope.host,
         module="crawl",
         description=f"Spidered {pages_fetched} page(s) within scope.",
         evidence=f"{sum(1 for p in ctx.urls.values() if p)} URL(s) carry "
-                 f"query parameters and will be tested by the vulns phase.",
+                 f"query/body parameters and will be tested by the vulns phase.",
         remediation="",
     ))

@@ -28,7 +28,7 @@ from textual.widgets import (
     Static,
 )
 
-from sentinel.context import ALL_PHASES, Config
+from sentinel.context import ALL_PHASES, DEFAULT_PHASES, Config
 from sentinel.engine import run_assessment
 from sentinel.findings import (
     SEVERITY_COLOR, SEVERITY_ORDER, Finding, rundown_text,
@@ -129,7 +129,11 @@ class SentinelApp(App):
             yield Label("Phases to run")
             with Horizontal(id="phases"):
                 for phase in ALL_PHASES:
-                    yield Checkbox(phase, value=True, id=f"phase-{phase}")
+                    yield Checkbox(
+                        phase,
+                        value=phase in DEFAULT_PHASES,
+                        id=f"phase-{phase}",
+                    )
             yield Label("Tuning")
             with Horizontal(id="tuning"):
                 yield Label("Rate /sec", classes="num-label")
@@ -250,6 +254,7 @@ class SentinelApp(App):
             concurrency=_to_int(self, "concurrency", 10),
             max_pages=_to_int(self, "maxpages", 200),
             allow_private=allow_private,
+            browser="browsercrawl" in phases,
             auto_verify=auto_verify,
             phases=phases,
         )

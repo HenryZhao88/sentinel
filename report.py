@@ -14,7 +14,7 @@ import datetime as dt
 import html
 import json
 import stat
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -59,6 +59,11 @@ def write(ctx: Context) -> dict[str, str]:
         summary[f.severity] += 1
         by_host[_host_of(f.target)][f.severity] += 1
 
+    endpoint_methods = Counter(e.method for e in ctx.endpoints)
+    endpoint_auth_profiles = sorted({
+        e.auth_profile for e in ctx.endpoints if e.auth_profile
+    } | set(ctx.auth_profiles))
+
     payload = {
         "tool": "Sentinel",
         "generated": now.isoformat(timespec="seconds"),
@@ -74,6 +79,13 @@ def write(ctx: Context) -> dict[str, str]:
             "requests_sent": ctx.http.request_count,
             "transport_errors": ctx.http.error_count,
             "urls_discovered": len(ctx.urls),
+            "endpoints_discovered": len(ctx.endpoints),
+            "endpoint_methods": dict(sorted(endpoint_methods.items())),
+            "api_endpoints": sum(1 for e in ctx.endpoints if "api" in e.risk_hints),
+            "auth_profiles": endpoint_auth_profiles,
+            "access_control_findings": sum(
+                1 for f in findings if f.module == "access"
+            ),
             "open_ports": ctx.open_ports,
         },
         "summary": summary,
@@ -248,6 +260,11 @@ def _render_html(payload: dict, findings: list, by_host: dict) -> str:
     stats = payload["stats"]
     workspace = payload.get("workspace")
     ws_line = (f' · workspace <b>{esc(workspace)}</b>' if workspace else "")
+    method_breakdown = ", ".join(
+        f"{method}: {count}"
+        for method, count in stats.get("endpoint_methods", {}).items()
+    ) or "none"
+    auth_profiles = ", ".join(stats.get("auth_profiles", [])) or "none"
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -296,6 +313,11 @@ def _render_html(payload: dict, findings: list, by_host: dict) -> str:
     <tr><td>Resolved IPs</td><td>{esc(', '.join(payload['scope']['resolved_ips']))}</td></tr>
     <tr><td>Requests sent</td><td>{stats['requests_sent']}</td></tr>
     <tr><td>URLs discovered</td><td>{stats['urls_discovered']}</td></tr>
+    <tr><td>Endpoints discovered</td><td>{stats.get('endpoints_discovered', 0)}</td></tr>
+    <tr><td>Endpoint methods</td><td>{esc(method_breakdown)}</td></tr>
+    <tr><td>API endpoints</td><td>{stats.get('api_endpoints', 0)}</td></tr>
+    <tr><td>Auth profiles used</td><td>{esc(auth_profiles)}</td></tr>
+    <tr><td>Access-control findings</td><td>{stats.get('access_control_findings', 0)}</td></tr>
     <tr><td>Open ports</td><td>{esc(stats['open_ports']) or 'none'}</td></tr>
   </table>
   <h2>Findings by host</h2>

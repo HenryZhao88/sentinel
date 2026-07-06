@@ -45,6 +45,13 @@ def _line(label: str, resp: httpx.Response | None, sent: str) -> str:
             f"    -> HTTP {resp.status_code}, {len(resp.content)} bytes{extra}")
 
 
+def _auth_kwargs(finding: Finding) -> dict:
+    auth_profile = finding.verify_data.get("auth_profile")
+    if not auth_profile:
+        return {"use_default_auth": False}
+    return {"auth_profile": auth_profile}
+
+
 async def run(ctx: Context) -> None:
     ctx.log("[bold cyan]» verify[/bold cyan]")
     pending = [f for f in ctx.findings if f.verify_type]
@@ -90,9 +97,10 @@ async def _verify_sqli(
     true_url = _with_param(url, param, base + "' AND '1'='1")
     false_url = _with_param(url, param, base + "' AND '1'='2")
 
-    unbalanced = await ctx.http.get(unbalanced_url)
-    true_resp = await ctx.http.get(true_url)
-    false_resp = await ctx.http.get(false_url)
+    auth = _auth_kwargs(finding)
+    unbalanced = await ctx.get(unbalanced_url, **auth)
+    true_resp = await ctx.get(true_url, **auth)
+    false_resp = await ctx.get(false_url, **auth)
 
     transcript = "\n".join([
         _line("unbalanced quote", unbalanced, unbalanced_url),
@@ -128,7 +136,7 @@ async def _verify_xss(
     url = finding.verify_data["url"]
     param = finding.verify_data["param"]
     probe_url = _with_param(url, param, _XSS_PROBE)
-    resp = await ctx.http.get(probe_url)
+    resp = await ctx.get(probe_url, **_auth_kwargs(finding))
     transcript = _line("script-free tag probe", resp, probe_url)
 
     if resp is not None and _XSS_MARKER in resp.text:
@@ -153,7 +161,9 @@ async def _verify_open_redirect(
     url = finding.verify_data["url"]
     param = finding.verify_data["param"]
     probe_url = _with_param(url, param, f"https://{_REDIRECT_HOST}/")
-    resp = await ctx.http.get(probe_url, follow_redirects=False)
+    resp = await ctx.get(
+        probe_url, follow_redirects=False, **_auth_kwargs(finding)
+    )
     transcript = _line("redirect probe", resp, probe_url)
 
     if resp is not None and resp.status_code in (301, 302, 303, 307, 308):

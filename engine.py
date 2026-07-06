@@ -10,7 +10,8 @@ from sentinel.context import ALL_PHASES, ApprovalCallback, Config, Context
 from sentinel.findings import Finding
 from sentinel.http import HttpClient
 from sentinel.modules import (
-    content, crawler, defense, jsanalysis, osint, ports, recon, verify, vulns,
+    access, browsercrawl, content, crawler, defense, jsanalysis, osint, ports,
+    recon, verify, vulns,
 )
 from sentinel.scope import Scope
 
@@ -19,8 +20,10 @@ _PHASE_FUNCS = {
     "recon": recon.run,
     "ports": ports.run,
     "crawl": crawler.run,
+    "browsercrawl": browsercrawl.run,
     "content": content.run,
     "jsanalysis": jsanalysis.run,
+    "access": access.run,
     "vulns": vulns.run,
     "defense": defense.run,
     "verify": verify.run,

@@ -8,7 +8,8 @@ import subprocess
 import sys
 
 from sentinel import __version__
-from sentinel.context import ALL_PHASES, Config
+from sentinel.context import ALL_PHASES, DEFAULT_PHASES, Config
+from sentinel.endpoint import AuthProfile, load_auth_profile, parse_cookie_pairs
 from sentinel.engine import run_assessment
 from sentinel.scope import Scope, ScopeError
 
@@ -48,6 +49,9 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="Max pages to crawl (default: 200)")
     scan.add_argument("--max-depth", type=int, default=4,
                       help="Max crawl depth (default: 4)")
+    scan.add_argument("--browser", action="store_true",
+                      help="Enable optional Playwright browser crawling to "
+                           "discover rendered links and XHR/fetch endpoints.")
     scan.add_argument("--only", default="",
                       help=f"Comma-separated phases to run "
                            f"(of: {','.join(ALL_PHASES)})")
@@ -64,6 +68,21 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="Pre-approve proof-of-concept verification for "
                            "every finding (otherwise each is approved "
                            "interactively during the verify phase)")
+    scan.add_argument("--header", action="append", default=[],
+                      help="Authenticated scan header, e.g. "
+                           "--header 'Authorization: Bearer ...'. May repeat.")
+    scan.add_argument("--cookie", action="append", default=[],
+                      help="Authenticated scan cookie, e.g. "
+                           "--cookie 'session=abc'. May repeat.")
+    scan.add_argument("--auth-profile", action="append", default=[],
+                      metavar="NAME:PATH",
+                      help="Load an auth profile JSON file. Example: "
+                           "--auth-profile user_a:profiles/user-a.json. "
+                           "May repeat for IDOR/access-control checks.")
+    scan.add_argument("--ssrf-callback", default=None,
+                      help="Optional collaborator/callback base URL for "
+                           "SSRF/OOB probing. Sentinel sends unique callback "
+                           "URLs only to URL-like parameters when provided.")
 
     sub.add_parser("ui", help="Launch the interactive, button-driven terminal UI.")
     sub.add_parser("doctor", help="Check for optional external tools "
@@ -161,6 +180,37 @@ def _make_approval_callback():
     return approve
 
 
+def _parse_header(raw: str) -> tuple[str, str]:
+    if ":" not in raw:
+        raise ValueError("headers must use 'Name: value' format")
+    name, value = raw.split(":", 1)
+    name = name.strip()
+    if not name:
+        raise ValueError("header name cannot be empty")
+    return name, value.strip()
+
+
+def _load_auth_profiles(args) -> list[AuthProfile]:
+    profiles: list[AuthProfile] = []
+    for spec in args.auth_profile:
+        if ":" in spec:
+            name, path = spec.split(":", 1)
+            profile = load_auth_profile(path, fallback_name=name.strip() or None)
+        else:
+            profile = load_auth_profile(spec)
+        profiles.append(profile)
+
+    headers = dict(_parse_header(raw) for raw in args.header)
+    cookies = parse_cookie_pairs(args.cookie)
+    if headers or cookies:
+        if profiles:
+            profiles[0].headers.update(headers)
+            profiles[0].cookies.update(cookies)
+        else:
+            profiles.append(AuthProfile(name="cli", headers=headers, cookies=cookies))
+    return profiles
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
@@ -175,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command != "scan":
         return 1
 
-    phases = list(ALL_PHASES)
+    phases = list(DEFAULT_PHASES)
     if args.only:
         requested = [p.strip() for p in args.only.split(",") if p.strip()]
         unknown = [p for p in requested if p not in ALL_PHASES]
@@ -183,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Unknown phase(s): {', '.join(unknown)}", file=sys.stderr)
             return 2
         phases = [p for p in ALL_PHASES if p in requested]
+    elif args.browser:
+        phases = [p for p in ALL_PHASES if p in set(phases) | {"browsercrawl"}]
 
     # Validate scope (DNS + private-IP guard) before asking for confirmation.
     try:
@@ -201,6 +253,12 @@ def main(argv: list[str] | None = None) -> int:
 
     _integration_notice()
 
+    try:
+        auth_profiles = _load_auth_profiles(args)
+    except (OSError, ValueError) as exc:
+        print(f"Auth profile error: {exc}", file=sys.stderr)
+        return 2
+
     config = Config(
         target=args.target,
         out_dir=args.out,
@@ -213,6 +271,10 @@ def main(argv: list[str] | None = None) -> int:
         allow_private=args.allow_private,
         include_subdomains=not args.no_subdomains,
         verify_tls=not args.insecure,
+        auth_profiles=auth_profiles,
+        primary_auth_profile=auth_profiles[0].name if auth_profiles else None,
+        browser=args.browser,
+        ssrf_callback_url=args.ssrf_callback,
         auto_verify=args.verify_findings,
         phases=phases,
     )
