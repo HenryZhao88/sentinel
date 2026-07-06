@@ -8,7 +8,7 @@ from typing import Callable
 from sentinel import report
 from sentinel.context import ALL_PHASES, ApprovalCallback, Config, Context
 from sentinel.findings import Finding
-from sentinel.http import HttpClient
+from sentinel.http_client import HttpClient
 from sentinel.modules import (
     content, crawler, defense, jsanalysis, osint, ports, recon, verify, vulns,
 )
